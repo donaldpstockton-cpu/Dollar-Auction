@@ -156,6 +156,7 @@ td.r,th.r{text-align:right}
 .outcome .net.pos{color:var(--ok)}
 .kv{display:grid;gap:6px;font-size:14px}
 .kv div{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding-bottom:6px}
+.note.final{font-size:16px;font-weight:600;color:var(--ink)}
 .toast{font-size:13px;font-weight:600;color:var(--danger);min-height:1.2em;text-align:center}
 
 .sheet-bg{position:fixed;inset:0;background:rgba(5,12,24,.55);display:grid;align-items:end;justify-items:center;padding:16px;z-index:50}
@@ -265,13 +266,14 @@ td.r,th.r{text-align:right}
             </div>
           </div>
           <div class="stat-line"><span class="label">Bidders connected</span><b class="num" id="hBidders">0</b></div>
-          <p class="note">Each student gets a random handle. No names are asked for or stored.</p>
+          <p class="note">Each student gets a random handle. No names are asked for or stored. A student who reloads keeps the same handle and tokens.</p>
         </div>
         <div class="card">
           <h3>Round controls</h3>
           <button class="btn btn-gold btn-block" id="hStart">Start round 1</button>
           <button class="btn btn-ghost" id="hEndNow" hidden>End round now</button>
           <p class="note" id="hCtlNote">Keep this tab open and the computer awake. It runs the auction.</p>
+          <p class="note">Each student starts with 500 tokens for the whole session, and the session ends after 15 rounds. Every round you start counts, even one with no bids.</p>
         </div>
         <div class="card">
           <h3>Settings</h3>
@@ -295,7 +297,7 @@ td.r,th.r{text-align:right}
         </div>
       </div>
       <div class="confirm-inline" id="hClearConfirm" hidden>
-        <p>This deletes every round and resets everyone's running total. It can't be undone.</p>
+        <p>This deletes every round, sets the round count back to zero, and gives every student a fresh 500 tokens. It can't be undone.</p>
         <div class="row"><button class="btn btn-danger" id="hClearYes">Delete results</button><button class="btn btn-ghost" id="hClearNo">Keep them</button></div>
       </div>
       <div class="tiles">
@@ -319,12 +321,12 @@ td.r,th.r{text-align:right}
     <div class="phone">
       <div class="me-line">
         <div><div class="label">You are</div><div class="me-tag" id="sMe">Bidder ···</div></div>
-        <div style="text-align:right"><div class="label">Your running total</div><div class="me-tag num" id="sNet">0</div></div>
+        <div style="text-align:right"><div class="label">Your tokens</div><div class="me-tag num" id="sNet">500</div></div>
       </div>
 
       <div class="card rules" id="sRules" hidden>
-        <div class="dots" id="sDots"><i class="on"></i><i></i><i></i></div>
-        <div class="big" id="sRBig">100</div>
+        <div class="dots" id="sDots"><i class="on"></i><i></i><i></i><i></i></div>
+        <div class="big" id="sRBig">500</div>
         <h2 id="sRTitle"></h2>
         <p id="sRBody"></p>
         <button class="btn btn-navy btn-block" id="sRNext">Next</button>
@@ -366,7 +368,8 @@ td.r,th.r{text-align:right}
           <div><span>Runner-up</span><b id="sOutRun">–</b></div>
           <div><span>Top two paid in total</span><b id="sOutCombined">–</b></div>
         </div>
-        <div class="debrief"><div class="label">Before the next round</div><p id="sOutQ"></p></div>
+        <p class="note" id="sOutFinal"></p>
+        <div class="debrief"><div class="label" id="sOutQLbl">Before the next round</div><p id="sOutQ"></p></div>
       </div>
     </div>
   </section>
@@ -394,6 +397,8 @@ td.r,th.r{text-align:right}
 "use strict";
 const $ = id => document.getElementById(id);
 const PRIZE = 100;
+const START_TOKENS = 500;
+const MAX_ROUNDS = 15;
 const ID_PREFIX = "oit-dollar-auction-";
 const PEER_OPTS = (() => { const ps = new URLSearchParams(location.search).get("ps"); if (!ps) return {debug:0};
   const [host, port] = ps.split(":"); return {debug:0, host, port:+port || 9000, path:"/", secure:false}; })();
@@ -406,7 +411,8 @@ const QUESTIONS = [
   "Where outside this room do two sides keep paying because they've already paid so much?"
 ];
 const RULES = [
-  {big:"100", title:"The prize is 100 tokens.", body:"Bidding opens at 5 and rises one step at a time. The clock resets with every bid, so the round ends only when nobody bids back."},
+  {big:"500", title:"You start with 500 tokens.", body:"They have to last all 15 rounds. You can never bid more tokens than you have left."},
+  {big:"100", title:"Each round's prize is 100 tokens.", body:"Bidding opens at 5 and rises one step at a time. The clock resets with every bid, so the round ends only when nobody bids back."},
   {big:"1st", title:"The highest bidder wins and pays their bid.", body:"Win at 60 and you're up 40. Win at 130 and you paid 130 tokens for 100."},
   {big:"2nd", title:"The second-highest bidder also pays and gets nothing.", body:"This is the trap. When you're in second place, one more bid looks cheaper than walking away with a loss. It rarely is."}
 ];
@@ -415,6 +421,7 @@ const ALPH = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 function fnv(s, seed){ let h = seed >>> 0; for (let i=0;i<s.length;i++){ h ^= s.charCodeAt(i); h = Math.imul(h, 16777619) >>> 0; } return h; }
 function handleFor(key){ let h = fnv(key, 0x9e3779b9), out=""; for (let i=0;i<3;i++){ out += ALPH[h % 32]; h = Math.floor(h/32); } return "Bidder " + out; }
 function randCode(n){ const a = new Uint32Array(n); crypto.getRandomValues(a); return Array.from(a, x => ALPH[x % 32]).join(""); }
+function balanceOf(key){ const L = S.ledger[key]; return START_TOKENS + (L ? L.net : 0); }
 function fmtNet(n){ return n > 0 ? "+" + n : n < 0 ? "−" + Math.abs(n) : "0"; }
 function show(id, on){ $(id).hidden = !on; }
 function text(id, v){ $(id).textContent = v; }
@@ -533,6 +540,7 @@ function onStudentMsg(c, d){
   }
   if (d.t === "bid"){
     const next = S.price + S.settings.step;
+    if (d.amt === next && d.amt > balanceOf(key)){ send(c, {t:"nack", amt:d.amt, reason:"funds"}); return; }
     if (d.amt !== next || S.out[key] || (S.leader && S.leader.k === key)){ send(c, {t:"nack", amt:d.amt}); return; }
     const h = handleFor(key);
     S.second = S.leader; S.leader = {k:key, h};
@@ -555,7 +563,7 @@ function clockLoop(){
 function readSettings(){ return {clock:+$("sClock").value, step:+$("sStep").value, open:+$("sOpen").value}; }
 function saveSettings(){ if (S.phase === "live") return; S.settings = readSettings(); pushState(); }
 function startRound(){
-  if (S.phase === "live") return;
+  if (S.phase === "live" || S.round >= MAX_ROUNDS) return;
   S.settings = readSettings();
   Object.assign(S, {round:S.round+1, phase:"live", price:0, leader:null, second:null, bids:{}, out:{}, feed:[], bidCount:0, last:null});
   deadline = Date.now() + S.settings.open*1000; lastEmitLeft = null;
@@ -609,7 +617,8 @@ function renderHost(){
   $("sClock").value = String(st.clock); $("sStep").value = String(st.step); $("sOpen").value = String(st.open);
   ["sClock","sStep","sOpen"].forEach(id => $(id).disabled = S.phase === "live");
   const live = S.phase === "live", ended = S.phase === "ended";
-  text("hRoundTitle", "Round " + Math.max(1, live || ended ? S.round : S.round + 1));
+  const done = S.round >= MAX_ROUNDS && !live;
+  text("hRoundTitle", "Round " + Math.min(MAX_ROUNDS, Math.max(1, live || ended ? S.round : S.round + 1)) + " of " + MAX_ROUNDS);
   const ph = $("hPhase");
   ph.className = "chip" + (live ? " live" : ended && S.last && !S.last.void && S.last.price > PRIZE ? " over" : "");
   ph.textContent = live ? "Live" : ended ? (S.last && S.last.void ? "Ended · no bids" : "Ended") : "Waiting to start";
@@ -633,8 +642,9 @@ function renderHost(){
     a.textContent = f.h; if (f.walk){ li.className = "walk"; b.textContent = "walked away"; } else b.textContent = String(f.amt); li.append(a, b); feed.appendChild(li); });
   show("hDebrief", ended && S.last && !S.last.void);
   text("hDebriefQ", QUESTIONS[(Math.max(1,S.round)-1) % QUESTIONS.length]);
-  $("hStart").textContent = live ? "Round " + S.round + " is live" : "Start round " + (S.round + 1);
-  $("hStart").disabled = live;
+  $("hStart").textContent = live ? "Round " + S.round + " is live" : done ? "All " + MAX_ROUNDS + " rounds played" : "Start round " + (S.round + 1);
+  $("hStart").disabled = live || done;
+  text("hCtlNote", done ? "The session is over. Download the CSV, then clear the results to start a new session with fresh 500-token wallets." : "Keep this tab open and the computer awake. It runs the auction.");
   show("hEndNow", live);
   renderClock(); renderPeople();
 }
@@ -721,7 +731,7 @@ function onHostMsg(d){
   } else if (d.t === "tick"){
     tick = {round:d.round, left:d.left, total:d.total}; renderClock();
   } else if (d.t === "nack"){
-    if (pending && pending.amt === d.amt){ pending = null; clearTimeout(pendingTimer); toast("Another bidder got to " + d.amt + " first. Check the new price."); renderStudent(); }
+    if (pending && pending.amt === d.amt){ pending = null; clearTimeout(pendingTimer); toast(d.reason === "funds" ? "You don't have enough tokens for a bid of " + d.amt + "." : "Another bidder got to " + d.amt + " first. Check the new price."); renderStudent(); }
   }
 }
 function toast(msg){ text("sToast", msg); clearTimeout(toastTimer); toastTimer = setTimeout(() => text("sToast", ""), 4000); }
@@ -734,10 +744,11 @@ function checkPending(){
 function nextBid(){ return S.price + S.settings.step; }
 function openSheet(){
   if (S.phase !== "live" || !connected) return;
+  if (nextBid() > balanceOf(myKey)){ toast("You don't have enough tokens for a bid of " + nextBid() + "."); return; }
   const mine = S.bids[myKey] ? S.bids[myKey].amt : 0, nb = nextBid(), winNet = PRIZE - nb;
   text("shTitle", "Bid " + nb + " tokens?");
   const w = $("shWin"); w.textContent = fmtNet(winNet); w.className = winNet < 0 ? "neg" : "pos";
-  text("shLose", "−" + nb);
+  text("shLose", "−" + nb + " (you'd have " + (balanceOf(myKey) - nb) + " left)");
   const ww = $("shWalk"); ww.textContent = fmtNet(-mine); ww.className = mine ? "neg" : "";
   text("shNote", mine ? "You've already committed " + mine + ". You lose that whether you bid again or not. The only question is whether " + nb + " is worth the chance at 100." : nb > PRIZE ? "This bid costs more than the prize is worth." : "Remember: if you end up in second place, you pay and get nothing.");
   text("shYes", "Yes, bid " + nb);
@@ -763,7 +774,8 @@ function renderStudent(){
   if (isHost) return;
   const k = myKey;
   const L = S.ledger[k], net = L ? L.net : 0;
-  const n = $("sNet"); n.textContent = fmtNet(net); n.style.color = net < 0 ? "var(--danger)" : net > 0 ? "var(--ok)" : "";
+  const bal = START_TOKENS + net;
+  const n = $("sNet"); n.textContent = String(bal); n.style.color = net < 0 ? "var(--danger)" : net > 0 ? "var(--ok)" : "";
   const showRules = !rulesDone;
   show("sRules", showRules);
   if (showRules){
@@ -777,12 +789,12 @@ function renderStudent(){
   show("sLive", !showRules && live);
   show("sOut", !showRules && ended);
   if (!showRules && !live && !ended){
-    text("sWaitLbl", "Round " + (S.round + 1));
+    text("sWaitLbl", "Round " + Math.min(MAX_ROUNDS, S.round + 1) + " of " + MAX_ROUNDS);
     text("sWaitTitle", connected ? "Waiting for your instructor" : "Reconnecting…");
     text("sWaitBody", connected ? "The room opens when the round starts. You don't have to bid. Watching costs nothing." : "Hold on while your phone finds the room again.");
   }
   if (live){
-    text("sRoundChip", "Round " + S.round + " · live");
+    text("sRoundChip", "Round " + S.round + " of " + MAX_ROUNDS + " · live");
     const p = $("sPrice"); p.textContent = String(S.price); p.className = "s-price num" + (S.price > PRIZE ? " over" : "");
     const isLead = S.leader && S.leader.k === k, isSec = S.second && S.second.k === k;
     text("sLeader", S.leader ? (isLead ? "You" : S.leader.h) : "No bids yet");
@@ -792,8 +804,9 @@ function renderStudent(){
     text("sMine", String(mine));
     const lose = $("sLose"); lose.textContent = mine ? "−" + mine : "0"; lose.className = "num" + (mine ? " neg" : "");
     const isOut = !!S.out[k], b = $("sBid");
-    b.disabled = !connected || isLead || isOut || !!pending;
-    b.textContent = !connected ? "Reconnecting…" : pending ? "Sending bid " + pending.amt + "…" : isOut ? "You walked away this round" : isLead ? "You're the top bidder" : "Bid " + nextBid();
+    const broke = nextBid() > balanceOf(k);
+    b.disabled = !connected || isLead || isOut || !!pending || broke;
+    b.textContent = !connected ? "Reconnecting…" : pending ? "Sending bid " + pending.amt + "…" : isOut ? "You walked away this round" : isLead ? "You're the top bidder" : broke ? "Not enough tokens to bid " + nextBid() : "Bid " + nextBid();
     show("sWalk", !isOut); $("sWalk").disabled = !connected;
   }
   if (ended && S.last){
@@ -803,7 +816,10 @@ function renderStudent(){
     else if (won){ netv = r.prize - r.price; title = netv >= 0 ? "You won the 100 tokens." : "You won, and paid more than the prize."; }
     else if (ran){ netv = -r.runnerPaid; title = "You came second. You pay, and get nothing."; }
     else title = S.bids[k] ? "You were outbid early. Your bid wasn't charged." : "You stayed out of it.";
-    text("sOutLbl", "Round " + r.round + " · ended");
+    text("sOutLbl", "Round " + r.round + " of " + MAX_ROUNDS + " · ended");
+    const last = r.round >= MAX_ROUNDS;
+    text("sOutFinal", last ? "That was the last round. You finished with " + balanceOf(k) + " tokens, after starting with " + START_TOKENS + "." : "You have " + balanceOf(k) + " tokens left for " + (MAX_ROUNDS - r.round) + (MAX_ROUNDS - r.round === 1 ? " more round." : " more rounds."));
+    $("sOutFinal").className = "note" + (last ? " final" : "");
     text("sOutTitle", title);
     const ne = $("sOutNet"); ne.textContent = fmtNet(netv) + " tokens"; ne.className = "net num" + (netv < 0 ? " neg" : netv > 0 ? " pos" : "");
     text("sOutPrice", r.void ? "–" : String(r.price));
@@ -811,6 +827,7 @@ function renderStudent(){
     text("sOutRun", r.runner ? (ran ? "You" : r.runner) + " · paid " + r.runnerPaid : "–");
     text("sOutCombined", r.void ? "–" : r.combined + " for a 100 prize");
     text("sOutQ", QUESTIONS[(r.round - 1) % QUESTIONS.length]);
+    text("sOutQLbl", last ? "To think about" : "Before the next round");
   }
   renderClock();
 }

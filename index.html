@@ -157,6 +157,10 @@ td.r,th.r{text-align:right}
 .kv{display:grid;gap:6px;font-size:14px}
 .kv div{display:flex;justify-content:space-between;gap:12px;border-bottom:1px solid var(--line);padding-bottom:6px}
 .note.final{font-size:16px;font-weight:600;color:var(--ink)}
+.champ{padding:18px 20px;border-radius:8px;background:var(--gold);color:var(--on-gold);display:grid;gap:2px}
+.champ .label{color:var(--on-gold);opacity:.8}
+.champ-who{font-family:var(--f-display);font-size:40px;font-weight:700;line-height:1.05;text-wrap:balance}
+.champ-sub{font-size:15px;font-weight:600}
 .toast{font-size:13px;font-weight:600;color:var(--danger);min-height:1.2em;text-align:center}
 
 .sheet-bg{position:fixed;inset:0;background:rgba(5,12,24,.55);display:grid;align-items:end;justify-items:center;padding:16px;z-index:50}
@@ -300,6 +304,11 @@ td.r,th.r{text-align:right}
         <p>This deletes every round, sets the round count back to zero, and gives every student a fresh 500 tokens. It can't be undone.</p>
         <div class="row"><button class="btn btn-danger" id="hClearYes">Delete results</button><button class="btn btn-ghost" id="hClearNo">Keep them</button></div>
       </div>
+      <div class="champ" id="hChamp" hidden>
+        <div class="label" id="hChampLbl">Highest bank after round 15</div>
+        <div class="champ-who" id="hChampWho"></div>
+        <div class="champ-sub num" id="hChampSub"></div>
+      </div>
       <div class="tiles">
         <div class="tile"><b class="num" id="tRounds">0</b><span>rounds played</span></div>
         <div class="tile"><b class="num" id="tAvg">–</b><span>average winning price</span></div>
@@ -432,7 +441,7 @@ function joinBase(){ return location.origin + location.pathname; }
 function psSuffix(){ const ps = new URLSearchParams(location.search).get("ps"); return ps ? "&ps=" + ps : ""; }
 
 const DEFAULT_SETTINGS = {clock:10, step:5, open:30};
-function freshState(){ return {round:0, phase:"lobby", price:0, leader:null, second:null, bids:{}, out:{}, feed:[], bidCount:0, ledger:{}, last:null, settings:Object.assign({}, DEFAULT_SETTINGS)}; }
+function freshState(){ return {round:0, phase:"lobby", price:0, leader:null, second:null, bids:{}, out:{}, feed:[], bidCount:0, ledger:{}, players:{}, last:null, settings:Object.assign({}, DEFAULT_SETTINGS)}; }
 let S = freshState();
 let tick = {round:-1, left:null, total:10};
 let isHost = false;
@@ -529,6 +538,7 @@ function onStudentMsg(c, d){
   const rec = conns.get(c.peer) || {conn:c, sid:null};
   if (d.t === "hello" && typeof d.sid === "string" && /^[A-Za-z0-9]{8,40}$/.test(d.sid)){
     rec.sid = d.sid; conns.set(c.peer, rec);
+    if (!S.players[d.sid]){ S.players[d.sid] = handleFor(d.sid); persistHost(); }
     send(c, {t:"state", S}); if (S.phase === "live") send(c, {t:"tick", round:S.round, left:tick.left, total:tick.total});
     renderPeople(); return;
   }
@@ -588,6 +598,7 @@ function clearAll(){
   show("hClearConfirm", false);
   if (S.phase === "live"){ text("hCtlNote", "End the round before clearing results."); return; }
   const keep = S.settings; S = freshState(); S.settings = keep; rounds = [];
+  conns.forEach(v => { if (v.sid) S.players[v.sid] = handleFor(v.sid); });
   pushState(); renderResults();
 }
 function downloadCsv(){
@@ -646,7 +657,29 @@ function renderHost(){
   $("hStart").disabled = live || done;
   text("hCtlNote", done ? "The session is over. Download the CSV, then clear the results to start a new session with fresh 500-token wallets." : "Keep this tab open and the computer awake. It runs the auction.");
   show("hEndNow", live);
-  renderClock(); renderPeople();
+  renderClock(); renderPeople(); renderChamp();
+}
+function topBank(){
+  const keys = new Set(Object.keys(S.players || {}).concat(Object.keys(S.ledger || {})));
+  let best = -Infinity, who = [];
+  keys.forEach(k => { const b = balanceOf(k); if (b > best){ best = b; who = [k]; } else if (b === best) who.push(k); });
+  return {best, who, total: keys.size};
+}
+function renderChamp(){
+  const show = S.round >= MAX_ROUNDS && S.phase === "ended";
+  $("hChamp").hidden = !show;
+  if (!show) return;
+  const {best, who, total} = topBank();
+  text("hChampLbl", "Highest bank after round " + MAX_ROUNDS);
+  if (!who.length){ text("hChampWho", "No students joined"); text("hChampSub", ""); return; }
+  const names = who.map(k => (S.players && S.players[k]) || (S.ledger[k] && S.ledger[k].h) || handleFor(k));
+  const gain = best - START_TOKENS, gainTxt = gain > 0 ? ", up " + gain + " from the 500 they started with" : gain < 0 ? ", down " + (-gain) + " from the 500 they started with" : ", the same 500 they started with";
+  if (who.length === 1){ text("hChampWho", names[0]); text("hChampSub", best + " tokens" + gainTxt + "."); }
+  else if (who.length === total){ text("hChampWho", "Everyone tied"); text("hChampSub", "All " + total + " students finished with " + best + " tokens."); }
+  else {
+    const shown = names.slice(0, 3).join(", ") + (names.length > 3 ? " and " + (names.length - 3) + " more" : "");
+    text("hChampWho", shown); text("hChampSub", "Tied at " + best + " tokens" + gainTxt + ".");
+  }
 }
 function renderResults(){
   text("tRounds", String(rounds.length));
